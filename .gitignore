@@ -1,0 +1,61 @@
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.egg-info/
+.eggs/
+.Python
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Build / distribution ---
+build/
+dist/
+pip-wheel-metadata/
+*.egg
+*.whl
+
+# --- Data & models ---
+data/raw/
+data/processed/
+models/
+*.h5
+*.pkl
+*.joblib
+*.csv
+*.tsv
+*.parquet
+
+# --- Jupyter / notebooks ---
+.ipynb_checkpoints/
+*.ipynb_convert/
+.notebook_cache/
+
+# --- Logs ---
+*.log
+logs/
+*.tmp
+*.temp
+
+# --- System / OS ---
+.DS_Store
+Thumbs.db
+
+# --- Editor configs ---
+.vscode/
+.idea/
+
+# --- Testing / coverage ---
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache/
+pytest_cache/
