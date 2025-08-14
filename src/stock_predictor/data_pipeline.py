@@ -312,6 +312,42 @@ class StockDataPipeline:
             return False
     
     def save_data(self, df: pd.DataFrame, symbol: str, source: str):
-        # Save to parquet format in organized structure
-        pass
-    
+        """
+        Save DataFrame to parquet format in organized structure.
+
+        Args:
+            df (pd.DataFrame): Data to save
+            symbol (str): Stock symbol (e.g., 'RELIANCE.NS')
+            source (str): Data Source ('yahoo_finance' or 'alpha_vantage')
+        """
+        try:
+            # Clean symbol for filename (remove .NS/.BO and special characters)
+            clean_symbol = symbol.replace('.NS', '').replace('.BO', '').replace('^', 'INDEX_')
+            
+            # Create timestamp for filename
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            # Determine file path based on source
+            if source == 'yahoo_finance':
+                base_path = self.raw_data_path
+            else:
+                base_path =  self.processed_data_path
+            
+            # Create source-specific subdirectory
+            source_dir = base_path / source
+            source_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create filename with symbol and timestamp 
+            filename = f"{clean_symbol}_{timestamp}.parquet"
+            file_path = source_dir / filename
+            
+            # Save to parquet format
+            df.to_parquet(file_path, index=False)
+            
+            self.logger.info(f"Data saved successfully: {file_path}")
+            self.logger.info(f"Saved {len(df)} records for {symbol}")
+            return file_path
+        except Exception as e:
+            self.logger.error(f"Error saving data for {symbol}: {e}")
+            raise
