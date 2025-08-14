@@ -1,0 +1,36 @@
+# API Configuration
+apis:
+  alpha_vantage:
+    api_key: "KCP9PG9FJ84TW446" 
+    base_url: "https://www.alphavantage.co/query"
+    calls_per_minute: 5 
+  
+  yahoo_finance:
+    timeout: 30
+    retry_attempts: 3
+
+# Data Configuration
+data:
+  symbols: ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFC.NS", "ICICIBANK.NS", "HINDUNILVR.NS", "ITC.NS", "KOTAKBANK.NS", "LT.NS", "BHARTIARTL.NS"]  # Popular Indian stocks with NSE suffixes
+  indices: ["^NSEI", "^BSEN"] # NIFTY 50 AND SENSEX
+  intervals: ["1d", "1h"]  # Daily and hourly data
+  lookback_days: 365  # How much historical data to fetch
+  
+# BSE/NSE specific settings
+market:
+  timezone: "Asia/Kolkata" # IST timezone
+  trading_hours:
+    start: "09:15"
+    end: "15:30"
+  currency: "INR"
+# Storage Configuration
+storage:
+  raw_data_path: "data/raw"
+  processed_data_path: "data/processed"
+  file_format: "parquet"  # More efficient than CSV for time series
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/data_pipeline.log"
