@@ -1,11 +1,9 @@
-import logging
-import yaml
+import logging, yaml, time
 import pandas as pd
 import yfinance as yf
-from alpha_vantage.timeseries import TimeSeries
 from pathlib import Path
-from typing import Dict, List, Optional
-import time
+from typing import Dict, List
+import pytz
 
 class StockDataPipeline:
     def __init__(self, config_path: str = "config/config.yaml"):
@@ -34,17 +32,14 @@ class StockDataPipeline:
         # Create logs directory if it doesn't exist
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         
-        # Configure logging with both file and console handlers
-        logging.basicConfig(
-            level=log_level,
-            format=log_format,
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler() # Console output
-            ]
-        )
-        
         self.logger = logging.getLogger(__name__)
+        if not self.logger.handlers:
+            handler = logging.FileHandler(log_file)
+            formatter = logging.Formatter(log_format)
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.addHandler(logging.StreamHandler())
+        self.logger.setLevel(log_level)
         self.logger.info("StockDataPipeline initialized successfully")
         
         # Initialize API clients based on configuration
@@ -56,16 +51,6 @@ class StockDataPipeline:
     def _setup_api_clients(self):
         """Set up API clients for data sources."""
         try:
-            # Alpha Vantage setup
-            alpha_config = self.config.get('apis', {}).get('alpha_vantage', {})
-            self.alpha_vantage_key = alpha_config.get('api_key')
-            if self.alpha_vantage_key and self.alpha_vantage_key != "YOUR_API_KEY_HERE":
-                from alpha_vantage.timeseries import TimeSeries
-                self.alpha_vantage_client = TimeSeries(key=self.alpha_vantage_key)
-                self.logger.info("Alpha Vantage client initialized")
-            else:
-                self.alpha_vantage_client = None
-                self.logger.warning("Alpha Vantage API key not configured")
             # Yahoo Finance configuration
             yahoo_config = self.config.get('apis', {}).get('yahoo_finance', {})
             self.yahoo_timeout = yahoo_config.get('timeout', 30)
@@ -160,6 +145,77 @@ class StockDataPipeline:
         self.logger.error(f"Failed to fetch data for {symbol} after {retry_attempts} attempts")
         raise Exception(f"Failed to fetch Yahoo Finance data for {symbol}: {last_exception}")
     
+    def _individual_fallback(self, symbols: List[str], period: str) -> Dict[str, pd.DataFrame]:
+        """
+        Fallback to individual symbol downloads with delays.
+        """
+        results = {}
+        for symbol in symbols:
+            try:
+                time.sleep(2)
+                data = self.fetch_yahoo_data(symbol, period)
+                results[symbol] = data
+                self.save_data(data, symbol, "yahoo_finance")
+                self.logger.info(f"Individual fallback completed: {symbol}")
+            except Exception as e:
+                self.logger.error(f"Individual fallback failed for {symbol}: {e}")
+        return results
+    
+    def fetch_multiple_symbols(self, symbols: List[str], period: str = "1y", retry_depth: int = 0) -> Dict[str, pd.DataFrame]:
+        """
+        Fetch data for multiple symbols with proper error handling.
+
+        Args:
+            symbols (List[str]): List of stock symbols.
+            period (str, optional): Time period for data. Defaults to "1y".
+
+        Returns:
+            Dict[str, pd.DataFrame]: Dict mapping symbol to DataFrame
+        """
+        self.logger.info("Bulk download %d symbols", len(symbols))
+        
+        # Add rate limiting protection
+        time.sleep(1)
+        
+        try:
+            raw = yf.download(
+                tickers=" ".join(symbols),
+                period=period,
+                group_by="ticker",
+                threads=True,
+                auto_adjust=False,
+                progress=False
+            )
+        except Exception as e:
+            self.logger.error(f"Bulk download failed: {e}")
+            return self._individual_fallback(symbols, period)
+        
+        results, failures = {}, []
+        
+        for sym in symbols:
+            try:
+                df = raw[sym] if len(symbols) > 1 else raw
+                df = df.dropna(how="all")
+                if df.empty or not self.validate_data(df):
+                    raise ValueError("empty or failed validation")
+                cleaned = self._clean_yahoo_data(df, sym)
+                results[sym] = cleaned
+                self.save_data(cleaned, sym, "yahoo_finance")
+                self.logger.info("Completed %s", sym)
+            except Exception as e:
+                failures.append((sym, str(e)))
+                self.logger.error("Failed %s: %s", sym, e)
+        self.logger.info("Finished: %d/%d succeeded", len(results),len(symbols))
+        if failures and retry_depth < 2: # Max 2 retry levels
+            self.logger.warning("Retrying %d failed symbols after 30s pause", len(failures))
+            time.sleep(30)
+            retry_syms = [s for s, _ in failures]
+            retry_results = self.fetch_multiple_symbols(retry_syms, period, retry_depth + 1)
+            results.update(retry_results)
+        elif failures:
+            self.logger.warning(f"Giving up on {len(failures)} symbols after max retries")
+        return results
+    
     def _clean_yahoo_data(self, data:pd.DataFrame, symbol: str) -> pd.DataFrame:
         """
         Clean and standardize Yahoo Finance data.
@@ -185,7 +241,7 @@ class StockDataPipeline:
             cleaned_data = cleaned_data.dropna(how='all')
             
             # Forward fill missing values
-            cleaned_data = cleaned_data.fillna(method='ffill')
+            cleaned_data = cleaned_data.ffill()
             
             # Add symbol column for identification
             cleaned_data['Symbol'] = symbol
@@ -203,7 +259,7 @@ class StockDataPipeline:
             
             # Rename Date column for consistency
             if 'Date' in cleaned_data.columns:
-                cleaned_data =  cleaned_data.rename(columns={'Date': 'Datetime'})
+                cleaned_data = cleaned_data.rename(columns={'Date': 'Datetime'})
             elif cleaned_data.index.name == 'Date':
                 cleaned_data.index.name = 'Datetime'
                 
@@ -248,7 +304,7 @@ class StockDataPipeline:
                     ist_tz = pytz.timezone('Asia/Kolkata')
                     
                     # If timezone naive, assume UTC then convert to IST
-                    if data['Datetime'].dt.tz is None:
+                    if data['Datetime'].dt.tz is None or str(data['Datetime'].dt.tz) == 'UTC':
                         data['Datetime'] = data['Datetime'].dt.tz_localize('UTC').dt.tz_convert(ist_tz)
                     else:
                         data['Datetime'] = data['Datetime'].dt.tz_convert(ist_tz)
@@ -260,10 +316,6 @@ class StockDataPipeline:
         except Exception as e:
             self.logger.error(f"Error adding Indian market metadata for {symbol}: {e}")
             return data # Return original data if metadata addition fails
-                        
-    def fetch_alpha_vantage_data(self, symbol: str, period: str) -> pd.DataFrame:
-        # Implement Alpha Vantage data fetching with rate limiting
-        pass
     
     def validate_data(self, df: pd.DataFrame) -> bool:
         """
@@ -318,7 +370,7 @@ class StockDataPipeline:
         Args:
             df (pd.DataFrame): Data to save
             symbol (str): Stock symbol (e.g., 'RELIANCE.NS')
-            source (str): Data Source ('yahoo_finance' or 'alpha_vantage')
+            source (str): Data Source ('yahoo_finance')
         """
         try:
             # Clean symbol for filename (remove .NS/.BO and special characters)
@@ -332,7 +384,7 @@ class StockDataPipeline:
             if source == 'yahoo_finance':
                 base_path = self.raw_data_path
             else:
-                base_path =  self.processed_data_path
+                base_path = self.processed_data_path
             
             # Create source-specific subdirectory
             source_dir = base_path / source

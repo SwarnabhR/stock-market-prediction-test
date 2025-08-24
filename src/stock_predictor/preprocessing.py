@@ -4,6 +4,8 @@ from pathlib import Path
 import logging
 from typing import Dict, List, Optional, Tuple
 import warnings 
+from concurrent.futures import ThreadPoolExecutor
+import pandas_ta as ta
 warnings.filterwarnings('ignore')
 
 
@@ -53,6 +55,12 @@ class DataPreprocessor:
         # Initialize logging for tracking preprocessing operations
         self.logger = logging.getLogger(__name__)
         self.logger.info("DataPreprocessor initialized successfully")
+        if not logging.getLogger().handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s | %(levelname)s | %(message)s"
+            )
+
 
     def load_raw_data(self, file_path: Path) -> pd.DataFrame:
         """
@@ -107,125 +115,50 @@ class DataPreprocessor:
             Exception: If technical indicator calculation fails
         """
         try:
-            # Create copy to avoid modifying original data
             data = df.copy()
-            
-            # === MOVING AVERAGES ===
-            # Simple Moving Averages - commonly used periods in Indian markets
-            data['SMA_5'] = data['Close'].rolling(window=5).mean()    # Short-term trend
-            data['SMA_10'] = data['Close'].rolling(window=10).mean()  # Short-term trend
-            data['SMA_20'] = data['Close'].rolling(window=20).mean()  # Medium-term trend
-            data['SMA_50'] = data['Close'].rolling(window=50).mean()  # Long-term trend
-            
-            # Exponential Moving Averages - gives more weight to recent prices
-            data['EMA_12'] = data['Close'].ewm(span=12).mean()  # Fast EMA for MACD
-            data['EMA_26'] = data['Close'].ewm(span=26).mean()  # Slow EMA for MACD
-            
-            # === MACD (Moving Average Convergence Divergence) ===
-            # Primary MACD line: difference between fast and slow EMA
-            data['MACD'] = data['EMA_12'] - data['EMA_26']
-            # Signal line: 9-period EMA of MACD line
-            data['MACD_signal'] = data['MACD'].ewm(span=9).mean()
-            # Histogram: difference between MACD and signal line
-            data['MACD_Histogram'] = data['MACD'] - data['MACD_signal']
-            
-            # === RSI (Relative Strength Index) ===
-            # 14-day RSI - measures overbought/oversold conditions
-            data['RSI'] = self._calculate_rsi(data['Close'], period=14)
-            
-            # === BOLLINGER BANDS ===
-            # Statistical bands around moving average for volatility analysis
-            bb_data = self._calculate_bollinger_bands(data['Close'], period=20, std_dev=2)
-            data = pd.concat([data, bb_data], axis=1)
-            
-            # === PRICE-BASED FEATURES ===
-            # Daily price change percentage
-            data['Price_Change'] = data['Close'].pct_change()
-            # 5-day moving average of price changes (smoothed momentum)
-            data['Price_Change_MA'] = data['Price_Change'].rolling(window=5).mean()
-            # 20-day rolling volatility (standard deviation of returns)
-            data['Volatility'] = data['Price_Change'].rolling(window=20).std()
-            
-            # === VOLUME INDICATORS ===
-            # 10-day simple moving average of volume
-            data['Volume_SMA'] = data['Volume'].rolling(window=10).mean()
-            # Volume ratio: current volume vs average volume
-            data['Volume_Ratio'] = data['Volume'] / data['Volume_SMA']
-            
-            # === HIGH-LOW SPREAD ANALYSIS ===
-            # Daily trading range as percentage of closing price
-            data['HL_Spread'] = (data['High'] - data['Low']) / data['Close']
-            # 5-day moving average of high-low spread
-            data['HL_Spread_MA'] = data['HL_Spread'].rolling(window=5).mean()
-            
-            self.logger.info("Technical indicators calculated successfully")
+
+            # Run a compact “strategy” so a single call adds every indicator
+            data.ta.strategy(ta.Strategy(
+                name="india_standard",
+                ta=[
+                    {"kind": "sma", "length": 5},
+                    {"kind": "sma", "length": 10},
+                    {"kind": "sma", "length": 20},
+                    {"kind": "sma", "length": 50},
+                    {"kind": "ema", "length": 12},
+                    {"kind": "ema", "length": 26},
+                    {"kind": "macd"},                      # adds MACD, MACDh, MACDs
+                    {"kind": "rsi",  "length": 14},
+                    {"kind": "bbands", "length": 20, "std": 2}
+                ]))
+
+            # Rename columns you already expect
+            data = data.rename(columns={
+                'RSI_14': 'RSI',
+                'MACD_12_26_9': 'MACD',
+                'MACDh_12_26_9': 'MACD_Histogram',
+                'MACDs_12_26_9': 'MACD_signal',
+                'BBL_20_2.0': 'BB_Lower',
+                'BBM_20_2.0': 'BB_Middle',
+                'BBU_20_2.0': 'BB_Upper',
+                'BBB_20_2.0': 'BB_Width',
+                'BBP_20_2.0': 'BB_Position'
+            })
+
+            # Extra price/volume features you had before
+            data['Price_Change']   = data['Close'].pct_change()
+            # data['Price_Change_MA'] = data['Price_Change'].rolling(5).mean()
+            data['Volatility']     = data['Price_Change'].rolling(20).std()
+            data['Volume_SMA']     = data['Volume'].rolling(10).mean()
+            data['Volume_Ratio']   = data['Volume'] / data['Volume_SMA']
+            data['HL_Spread']      = (data['High'] - data['Low']) / data['Close']
+            data['HL_Spread_MA']   = data['HL_Spread'].rolling(5).mean()
+
+            self.logger.info("Technical indicators calculated via pandas-ta")
             return data
-            
         except Exception as e:
-            self.logger.error(f"Error calculating technical indicators: {e}")
+            self.logger.error(f"TA calculation failed: {e}")
             raise
-    
-    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
-        """
-        Calculate Relative Strength Index (RSI) for momentum analysis.
-        
-        RSI is a momentum oscillator that measures the speed and magnitude of 
-        price changes. Values above 70 typically indicate overbought conditions,
-        while values below 30 indicate oversold conditions.
-
-        Args:
-            prices (pd.Series): Series of closing prices
-            period (int): Number of periods for RSI calculation. Defaults to 14.
-
-        Returns:
-            pd.Series: RSI values (0-100 scale)
-        """
-        # Calculate price differences (gains and losses)
-        delta = prices.diff()
-        
-        # Separate gains and losses, replacing negative values with 0
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        
-        # Calculate Relative Strength (RS) and RSI
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi
-    
-    def _calculate_bollinger_bands(self, prices: pd.Series, period: int = 20, std_dev: int = 2) -> pd.DataFrame:
-        """
-        Calculate Bollinger Bands for volatility and mean reversion analysis.
-        
-        Bollinger Bands consist of:
-        - Middle Band: Simple Moving Average
-        - Upper Band: Middle Band + (Standard Deviation × multiplier)
-        - Lower Band: Middle Band - (Standard Deviation × multiplier)
-        
-        Args:
-            prices (pd.Series): Series of closing prices
-            period (int): Period for moving average calculation. Defaults to 20.
-            std_dev (int): Standard deviation multiplier. Defaults to 2.
-
-        Returns:
-            pd.DataFrame: DataFrame with Bollinger Band indicators
-        """
-        # Calculate middle band (Simple Moving Average)
-        sma = prices.rolling(window=period).mean()
-        # Calculate rolling standard deviation
-        std = prices.rolling(window=period).std()
-        
-        # Create Bollinger Bands DataFrame
-        bb_data = pd.DataFrame({
-            'BB_Upper': sma + (std * std_dev),      # Upper band
-            'BB_Lower': sma - (std * std_dev),      # Lower band  
-            'BB_Middle': sma,                        # Middle band (SMA)
-            'BB_Width': (sma + (std * std_dev)) - (sma - (std * std_dev)),  # Band width
-            'BB_Position': (prices - (sma - (std * std_dev))) / 
-                          ((sma + (std * std_dev)) - (sma - (std * std_dev)))  # Price position within bands
-        })
-        
-        return bb_data
     
     def create_sequences_for_lstm(self, df: pd.DataFrame, sequence_length: int = 60, 
                                   prediction_horizon: int = 1) -> Tuple[np.ndarray, np.ndarray]:
@@ -286,17 +219,19 @@ class DataPreprocessor:
             from sklearn.preprocessing import MinMaxScaler
             scaler = MinMaxScaler()
             scaled_data = scaler.fit_transform(clean_data)
+            raw_close = clean_data['Close'].values
             
             # Create sequences using sliding window approach
             X, y = [], []
             for i in range(sequence_length, len(scaled_data) - prediction_horizon + 1):
                 # Input sequence: previous 'sequence_length' time steps
                 X.append(scaled_data[i-sequence_length:i])
-                # Target: Close price at prediction horizon (index 3 = Close column)
-                y.append(scaled_data[i+prediction_horizon-1, 3])
+                # Target: Close price at prediction horizon
+                y.append(raw_close[i + prediction_horizon - 1])
             
             # Convert to numpy arrays for neural network compatibility
             X, y = np.array(X), np.array(y)
+            y = y.reshape(-1, 1)
             
             self.logger.info(f"Created {len(X)} sequences for LSTM training")
             self.logger.info(f"Sequence shape: {X.shape}, Target shape: {y.shape}")
@@ -306,6 +241,7 @@ class DataPreprocessor:
         except Exception as e:
             self.logger.error(f"Error creating LSTM sequences: {e}")
             raise
+    
     
     def preprocess_for_ml(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """
@@ -340,7 +276,7 @@ class DataPreprocessor:
             # Handle missing values using forward fill then backward fill
             # Forward fill: use last known value (common in financial data)
             # Backward fill: handle any remaining NaN at beginning of series
-            df_processed = df_with_indicators.fillna(method='ffill').fillna(method='bfill')
+            df_processed = df_with_indicators.ffill().bfill()
             
             # Add time-based features specific to Indian stock market
             if 'Datetime' in df_processed.columns:
@@ -411,15 +347,24 @@ class DataPreprocessor:
             self.logger.error(f"Error saving processed data for {symbol}: {e}")
             raise
     
-    def process_all_raw_data(self) -> List[Path]:
+    def _process_single_file(self, raw_file: Path) -> Optional[Path]:
         """
-        Batch process all raw stock data files and save processed versions.
-        
-        This method provides complete automation of the preprocessing pipeline:
-        1. Discovers all raw parquet files in the yahoo_finance directory
-        2. Processes each file through the complete ML preprocessing pipeline
-        3. Saves processed data with consistent naming convention
-        4. Provides comprehensive logging and error handling
+        Load -> Preprocess -> Save a single raw parquet file.
+        Returns the saved path or None if any step fails.
+        """
+        try:
+            raw_df = self.load_raw_data(raw_file)
+            symbol = raw_df['Symbol'].iloc[0] if 'Symbol' in raw_df.columns else raw_file.stem
+            proc_df = self.preprocess_for_ml(raw_df, symbol)
+            return self.save_processed_data(proc_df, symbol, "ml_ready")
+        except Exception as e:
+            self.logger.error(f"{raw_file.name} skipped: {e}")
+            return None
+    
+    def process_all_raw_data(self, max_workers: int | None = None) -> List[Path]:
+        """
+        Discover all raw parquet files, preprocess them in parallel, and
+        return the list of saved ML-ready parquet paths.
 
         Returns:
             List[Path]: List of file paths where processed data was saved
@@ -427,40 +372,13 @@ class DataPreprocessor:
         Raises:
             Exception: If batch processing fails
         """
-        try:
-            # Locate raw data directory
-            raw_yahoo_path = self.raw_data_path / "yahoo_finance"
-            processed_files = []
-            
-            # Validate that raw data directory exists
-            if not raw_yahoo_path.exists():
-                self.logger.warning(f"Raw data directory not found: {raw_yahoo_path}")
-                return processed_files
-            
-            # Process each parquet file in the directory
-            for raw_file in raw_yahoo_path.glob("*.parquet"):
-                self.logger.info(f"Processing {raw_file.name}...")
-                
-                # Load raw stock data
-                raw_df = self.load_raw_data(raw_file)
-                
-                # Extract symbol from data (prefer data column over filename)
-                symbol = raw_df['Symbol'].iloc[0] if 'Symbol' in raw_df.columns else raw_file.stem
-                
-                # Run complete preprocessing pipeline
-                processed_df = self.preprocess_for_ml(raw_df, symbol)
-                
-                # Save processed data with ML-ready tag
-                saved_path = self.save_processed_data(processed_df, symbol, "ml_ready")
-                processed_files.append(saved_path)
-                
-                self.logger.info(f"✅ Completed processing: {symbol}")
-            
-            # Log batch processing summary
-            self.logger.info(f"Batch processing completed: {len(processed_files)} files processed successfully")
-            
-            return processed_files
-            
-        except Exception as e:
-            self.logger.error(f"Error in batch processing: {e}")
-            raise
+        raw_yahoo_path = self.raw_data_path / "yahoo_finance"
+        if not raw_yahoo_path.exists():
+            self.logger.warning(f"Raw data directory not found: {raw_yahoo_path}")
+            return []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            processed_files = [p for p in pool.map(self._process_single_file, raw_yahoo_path.glob("*.parquet")) if p]
+
+        self.logger.info("Batch processing completed: %d files", len(processed_files))
+        return processed_files

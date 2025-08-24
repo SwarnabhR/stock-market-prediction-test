@@ -25,12 +25,12 @@ market:
   currency: "INR"
 # Storage Configuration
 storage:
-  raw_data_path: "../data/raw"
-  processed_data_path: "../data/processed"
+  raw_data_path: "data/raw"
+  processed_data_path: "data/processed"
   file_format: "parquet"  # More efficient than CSV for time series
 
 # Logging Configuration
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "../logs/data_pipeline.log"
+  file: "logs/data_pipeline.log"

@@ -20,7 +20,7 @@ setup(
         "requests>=2.31.0",              # For API calls
     ],
     python_requires=">=3.9",
-    author="Your Name",
+    author="Roy",
     description="AI-powered BSE/NSE stock price prediction platform",
     long_description=open("README.md").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
