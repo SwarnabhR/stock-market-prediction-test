@@ -242,6 +242,33 @@ class DataPreprocessor:
             self.logger.error(f"Error creating LSTM sequences: {e}")
             raise
     
+    def create_sequences_for_lstm_percentage(self, df: pd.DataFrame, sequence_length: int = 60, prediction_horizon: int = 1) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Create LSTM squences with percentage change as target instead of absolute price.
+        This helps reduce systematic bias and makes predictions scale-invarient.
+
+        Args:
+            df (pd.DataFrame): 
+            sequence_length (int, optional): Defaults to 60.
+            prediction_horizon (int, optional): Defaults to 1.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: _description_
+        """
+        try:
+            # Select same features as before
+            feature_columns = [
+                'Open', 'High', 'Low', 'Volume',
+                'SMA_5', 'SMA_10', 'SMA_20',
+                'RSI', 'MACD',
+                'Price_Change', 'Volatility',
+                'Volume_Ratio', 'HL_Spread'
+            ]
+            
+            available_features = [col for col in feature_columns if col in df.columns]
+            clean_data = df[available_features].dropna()
+            
+            # Calculate percentage
     
     def preprocess_for_ml(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """
