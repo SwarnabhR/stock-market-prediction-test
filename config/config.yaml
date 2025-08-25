@@ -1,13 +1,9 @@
 # API Configuration
-apis:
-  alpha_vantage:
-    api_key: "KCP9PG9FJ84TW446" 
-    base_url: "https://www.alphavantage.co/query"
-    calls_per_minute: 5 
-  
+apis:  
   yahoo_finance:
     timeout: 30
     retry_attempts: 3
+    rate_limit: 2000
 
 # Data Configuration
 data:
